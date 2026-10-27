@@ -1745,7 +1745,7 @@ var aiMenuKeys = [][2]string{
 	{"n", "new — an AI session with options, or a plain terminal"},
 	{"o", "open the session in a new terminal tab"},
 	{"w", "open the session in a new cmux workspace (cmux only)"},
-	{"r", "rename (custom title for findability; empty resets)"},
+	{"r", "rename — claude/codex sessions are renamed in the engine too; empty clears ptln's name only"},
 	{"→ · tab", "focus the detail pane (↑↓ scroll · ← back)"},
 	{"d", "view the session repo's git diff"},
 	{"/", "search (esc clears)"},
