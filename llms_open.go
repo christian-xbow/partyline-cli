@@ -75,9 +75,10 @@ end tell`, asQuote(cmd))
 		if err != nil {
 			return "", fmt.Errorf("cmux new-surface: %w", err)
 		}
-		for _, f := range strings.Fields(string(out)) { // "OK surface=surface:N pane=pane:N"
-			if ref, ok := strings.CutPrefix(f, "surface="); ok {
-				_ = exec.Command("cmux", "rename-tab", "--surface", ref, muxLabelFor(s, loadLLMMeta())).Run()
+		for _, f := range strings.Fields(string(out)) { // "OK surface:N pane:N workspace:N"
+			if strings.HasPrefix(f, "surface:") {
+				_ = exec.Command("cmux", "rename-tab", "--surface", f, muxLabelFor(s, loadLLMMeta())).Run()
+				break
 			}
 		}
 		return "opened in a new cmux tab", nil
