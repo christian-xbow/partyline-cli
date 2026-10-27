@@ -1063,13 +1063,13 @@ func readJSONLDetail(s aiSession, d *aiDetail, parse lineMsg) {
 					d.Ended = ts
 				}
 			}
+			if model != "" {
+				d.Model = model // latest wins: a mid-session /model switch shows the current one
+			}
 			if role == "" {
 				continue
 			}
 			d.Messages++
-			if model != "" {
-				d.Model = model
-			}
 			if text == "" {
 				continue
 			}
@@ -1102,8 +1102,11 @@ func readJSONLDetail(s aiSession, d *aiDetail, parse lineMsg) {
 		tail.Scan()             // discard the partial line we landed inside
 		d.Recent = d.Recent[:0] // the genuine recent messages live in the tail, not the head
 		for tail.Scan() {
-			role, text, _, ts, toks, cumulative := parse(tail.Bytes())
+			role, text, model, ts, toks, cumulative := parse(tail.Bytes())
 			addToks(toks, cumulative)
+			if model != "" {
+				d.Model = model // the head only knows the model the session STARTED on
+			}
 			if !ts.IsZero() && ts.After(d.Ended) {
 				d.Ended = ts
 			}
@@ -1136,7 +1139,11 @@ func claudeLineMsg(b []byte) (role, text, model string, ts time.Time, toks int64
 	}
 	// Per-turn usage on assistant lines → summed (not cumulative).
 	toks = ev.Message.Usage.Input + ev.Message.Usage.Output
-	return ev.Type, contentText(ev.Message.Content), ev.Message.Model, parseTime(ev.Timestamp), toks, false
+	model = ev.Message.Model
+	if model == "<synthetic>" { // claude's own placeholder on API-error / interrupted turns, not a model
+		model = ""
+	}
+	return ev.Type, contentText(ev.Message.Content), model, parseTime(ev.Timestamp), toks, false
 }
 
 func codexLineMsg(b []byte) (role, text, model string, ts time.Time, toks int64, cumulative bool) {
@@ -1159,6 +1166,10 @@ func codexLineMsg(b []byte) (role, text, model string, ts time.Time, toks int64,
 		return
 	}
 	ts = parseTime(ev.Timestamp)
+	// The model lives only on turn_context lines (one per turn, so a mid-session switch shows).
+	if ev.Type == "turn_context" {
+		return "", "", ev.Payload.Model, ts, 0, false
+	}
 	// token_count events carry a CUMULATIVE running total (take the max/last).
 	if ev.Type == "event_msg" && ev.Payload.Type == "token_count" {
 		return "", "", "", ts, ev.Payload.Info.Total.Total, true
