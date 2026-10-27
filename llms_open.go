@@ -72,6 +72,20 @@ end tell`, asQuote(cmd))
 		}
 		return "opened in a new Terminal window", nil
 
+	case os.Getenv("CMUX_SOCKET_PATH") != "":
+		// cmux is Ghostty-based (TERM_PROGRAM=ghostty), so it must come before the Ghostty
+		// case: its CLI opens a real tab (surface) in the current pane, which we then name.
+		out, err := exec.Command("cmux", "new-surface", "--type", "terminal", "--command", cmd).Output()
+		if err != nil {
+			return "", fmt.Errorf("cmux new-surface: %w", err)
+		}
+		for _, f := range strings.Fields(string(out)) { // "OK surface=surface:N pane=pane:N"
+			if ref, ok := strings.CutPrefix(f, "surface="); ok {
+				_ = exec.Command("cmux", "rename-tab", "--surface", ref, muxLabelFor(s, loadLLMMeta())).Run()
+			}
+		}
+		return "opened in a new cmux tab", nil
+
 	case os.Getenv("TERM_PROGRAM") == "ghostty":
 		// Ghostty has no remote-control API yet; a fresh window is the best we
 		// can script. On macOS go through `open` so it reuses the running app.
@@ -115,7 +129,7 @@ end tell`, asQuote(cmd))
 			}
 		}
 	}
-	return "", fmt.Errorf("new-tab not supported in this terminal — works in tmux, iTerm2, Terminal.app, WezTerm, kitty, Ghostty, Alacritty, GNOME Terminal, Konsole")
+	return "", fmt.Errorf("new-tab not supported in this terminal — works in tmux, cmux, iTerm2, Terminal.app, WezTerm, kitty, Ghostty, Alacritty, GNOME Terminal, Konsole")
 }
 
 // shQuote single-quotes a string for sh (the resume id/path may carry spaces).
