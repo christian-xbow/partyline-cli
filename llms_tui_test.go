@@ -50,19 +50,11 @@ func TestBuildRowsTree(t *testing.T) {
 		t.Fatalf("collapsed /a + expanded /b: got %v want %v", got, want)
 	}
 
-	// default (no overrides, nothing live) → everything collapsed
+	// default (no overrides) → everything expanded
 	m = mk()
 	m.buildRows()
-	if got, want := rowKinds(m), []string{"H:/a", "H:/b"}; !eqRowKinds(got, want) {
-		t.Fatalf("default collapsed: got %v want %v", got, want)
-	}
-
-	// a live session auto-expands its project (active work shows on open)
-	m = mk()
-	m.live = map[string]bool{"s1": true}
-	m.buildRows()
-	if got, want := rowKinds(m), []string{"H:/a", "S:s1", "S:s2", "H:/b"}; !eqRowKinds(got, want) {
-		t.Fatalf("auto-expand live: got %v want %v", got, want)
+	if got, want := rowKinds(m), []string{"H:/a", "S:s1", "S:s2", "H:/b", "S:s3"}; !eqRowKinds(got, want) {
+		t.Fatalf("default expanded: got %v want %v", got, want)
 	}
 
 	// a search query expands everything regardless of collapse state
@@ -90,7 +82,7 @@ func TestBuildRowsTree(t *testing.T) {
 }
 
 // Worktree sessions must NOT become their own top-level projects: they attribute to the
-// parent repo and sit in a nested group that starts collapsed.
+// parent repo and sit in a nested group (expanded by default, like projects).
 func TestBuildRowsWorktreeGroup(t *testing.T) {
 	mk := func() *aiMenu {
 		return &aiMenu{view: []aiSession{
@@ -103,6 +95,7 @@ func TestBuildRowsWorktreeGroup(t *testing.T) {
 	// Collapsed parent: one row, and its count covers the worktree sessions too (it's the
 	// only thing you can see).
 	m := mk()
+	m.collapsed = map[string]bool{"/a": true}
 	m.buildRows()
 	if got, want := rowKinds(m), []string{"H:/a"}; !eqRowKinds(got, want) {
 		t.Fatalf("collapsed: got %v want %v", got, want)
@@ -113,7 +106,7 @@ func TestBuildRowsWorktreeGroup(t *testing.T) {
 
 	// Expanded parent: plain sessions, then a collapsed worktrees group header.
 	m = mk()
-	m.collapsed = map[string]bool{"/a": false}
+	m.collapsed = map[string]bool{"/a": false, wtGroupKey("/a"): true}
 	m.buildRows()
 	if got, want := rowKinds(m), []string{"H:/a", "S:s1", "W:/a"}; !eqRowKinds(got, want) {
 		t.Fatalf("expanded project, collapsed worktrees: got %v want %v", got, want)
@@ -132,12 +125,11 @@ func TestBuildRowsWorktreeGroup(t *testing.T) {
 		t.Fatalf("cursor = %d after toggling the group, want it to stay on the group header (2)", m.cursor)
 	}
 
-	// A live worktree session opens its project AND its group (you can see what's running).
+	// Default: the project AND its worktrees group are expanded.
 	m = mk()
-	m.live = map[string]bool{"w1": true}
 	m.buildRows()
 	if got, want := rowKinds(m), []string{"H:/a", "S:s1", "W:/a", "S:w1", "S:w2"}; !eqRowKinds(got, want) {
-		t.Fatalf("live worktree session: got %v want %v", got, want)
+		t.Fatalf("default expanded: got %v want %v", got, want)
 	}
 
 	// A search query expands everything, group included.

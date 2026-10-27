@@ -202,17 +202,16 @@ func projLabel(cwd string) string {
 	return strings.TrimPrefix(filepath.Base(cwd), ".")
 }
 
-// isExpanded reports whether a project's sessions are shown. A search query expands
-// everything (so matches are visible); otherwise the user's explicit toggle wins; the
-// default is collapsed, EXCEPT projects with a live session auto-expand.
-func (m *aiMenu) isExpanded(proj string, hasLive bool) bool {
+// isExpanded reports whether a project's sessions are shown: the user's explicit toggle wins,
+// except that a search query expands everything (so matches are visible); the default is expanded.
+func (m *aiMenu) isExpanded(proj string) bool {
 	if strings.TrimSpace(m.query) != "" {
 		return true
 	}
 	if c, ok := m.collapsed[proj]; ok {
 		return !c
 	}
-	return hasLive
+	return true
 }
 
 // wtGroupKey is the collapse-state key for a project's nested worktrees group, so it
@@ -235,16 +234,7 @@ func rowMember(r treeRow, s *aiSession) bool {
 }
 
 // expandedRow reports whether a header row's children are shown.
-func (m *aiMenu) expandedRow(r treeRow) bool {
-	hasLive := false
-	for i := range m.view {
-		if rowMember(r, &m.view[i]) && m.live[m.view[i].ID] {
-			hasLive = true
-			break
-		}
-	}
-	return m.isExpanded(rowKey(r), hasLive)
-}
+func (m *aiMenu) expandedRow(r treeRow) bool { return m.isExpanded(rowKey(r)) }
 
 // buildRows derives the flattened tree (m.rows) from m.view: group by project, project
 // order = first appearance in view (so the active sort still drives ordering), sessions
@@ -285,7 +275,7 @@ func (m *aiMenu) buildRows() {
 		}
 		gh := treeRow{proj: k, sessIdx: -1, count: len(wx), group: true}
 		m.rows = append(m.rows, gh)
-		if m.expandedRow(gh) { // default collapsed (isExpanded), so worktrees stay out of the way
+		if m.expandedRow(gh) {
 			for _, i := range wx {
 				m.rows = append(m.rows, treeRow{proj: k, sessIdx: i, group: true})
 			}
