@@ -240,8 +240,19 @@ func muxLabel(s aiSession) string {
 // they set one in the launcher (so the picker matches what the browser shows), else the
 // tool · project default.
 func muxLabelFor(s aiSession, meta map[string]sessMeta) string {
-	if nm := strings.TrimSpace(meta[s.ID].Name); nm != "" {
+	if nm := sessionName(s, meta); nm != "" {
 		return nm
 	}
 	return muxLabel(s)
+}
+
+// sessionName is the name the user gave a session, "" if none. A name set in the engine wins over
+// ptln's sidecar rename: a ptln rename of a claude/codex session is written into its store too (so
+// it comes back as the engine name), and a later /rename in claude must not be hidden by an older
+// sidecar entry.
+func sessionName(s aiSession, meta map[string]sessMeta) string {
+	if s.Named {
+		return s.Title
+	}
+	return strings.TrimSpace(meta[s.ID].Name)
 }

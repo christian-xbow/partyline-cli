@@ -331,9 +331,9 @@ func (m *aiMenu) toggleCollapse() {
 	m.setRowCollapsed(*r, m.expandedRow(*r)) // currently expanded → collapse, and vice-versa
 }
 
-// displayTitle is the user's custom name override if set, else the tool-derived title.
+// displayTitle is the session's name (see sessionName), else the tool-derived title.
 func (m *aiMenu) displayTitle(s aiSession) string {
-	if n := strings.TrimSpace(m.meta[s.ID].Name); n != "" {
+	if n := sessionName(s, m.meta); n != "" {
 		return n
 	}
 	return s.Title
@@ -356,12 +356,17 @@ func (m *aiMenu) commitRename() {
 	m.meta[s.ID] = mt
 	saveLLMMeta(m.meta)
 	m.renameBuf = ""
-	if mt.Name == "" {
+	switch {
+	case mt.Name == "" && s.Named:
+		m.flash = "✓ ptln name cleared — the name set in " + s.Tool + " still shows"
+	case mt.Name == "":
 		m.flash = "✓ name cleared"
-	} else {
+	case (s.Tool == "claude" || s.Tool == "codex") && !renameInEngine(*s, mt.Name): // so the engine's resume picker matches
+		m.flash = "✓ renamed here (couldn't write " + s.Tool + "'s session store)"
+	default:
 		m.flash = "✓ renamed"
 	}
-	m.applyFilter()
+	m.refresh() // re-read the stores: the new name now lives in the engine's store, which outranks the sidecar
 }
 
 // permMode is one entry in the resume permission picker. flags are appended
@@ -702,7 +707,7 @@ func (m *aiMenu) handleKey(b []byte) (bool, *aiSession) {
 		m.filter = true
 	case 'r': // rename: edit this session's title override (for findability)
 		if s := m.selected(); s != nil {
-			m.renaming, m.renameBuf = true, strings.TrimSpace(m.meta[s.ID].Name)
+			m.renaming, m.renameBuf = true, sessionName(*s, m.meta)
 		}
 	case 'a':
 		m.showAll = !m.showAll

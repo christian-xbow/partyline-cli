@@ -49,7 +49,7 @@ func TestScanClaudePrefersTheLatestMessage(t *testing.T) {
 		`{"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}}`,
 		`{"type":"user","message":{"content":"<local-command-stdout>See ya!</local-command-stdout>"}}`,
 	})
-	cwd, title := scanClaude(path)
+	cwd, title, _ := scanClaude(path)
 	if cwd != "/Users/x/dev/app" {
 		t.Errorf("cwd = %q", cwd)
 	}
@@ -66,7 +66,7 @@ func TestCompactedSessionNeverShowsTheSummary(t *testing.T) {
 		`{"type":"user","cwd":"/tmp","message":{"content":"This session is being continued from a previous conversation that ran out of context."}}`,
 		`{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}`,
 	})
-	if _, title := scanClaude(path); strings.Contains(strings.ToLower(title), "being continued") {
+	if _, title, _ := scanClaude(path); strings.Contains(strings.ToLower(title), "being continued") {
 		t.Fatalf("compacted session still titled by its summary: %q", title)
 	}
 }

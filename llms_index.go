@@ -19,6 +19,7 @@ type scanEntry struct {
 	Cwd   string `json:"c,omitempty"`
 	Title string `json:"t,omitempty"`
 	ID    string `json:"i,omitempty"` // codex/gemini carry an id inside the file body
+	Named bool   `json:"n,omitempty"` // Title is the engine's own session name
 }
 
 var (
@@ -28,7 +29,7 @@ var (
 )
 
 // v2: titles now carry claude /rename names, so entries cached before that must be rescanned.
-func scanIndexPath() string { return filepath.Join(stateDir(), "scan-index-v2.json") }
+func scanIndexPath() string { return filepath.Join(stateDir(), "scan-index-v3.json") }
 
 // beginScanPass loads the cache (once) and resets the per-pass seen-set.
 func beginScanPass() {

@@ -13,8 +13,17 @@ func TestEngineSessionNames(t *testing.T) {
 {"type":"custom-title","customTitle":"Auth work","sessionId":"s"}
 {"type":"user","message":{"role":"user","content":"now add tests"}}
 `), 0o600)
-	if _, title := scanClaude(cl); title != "Auth work" {
+	if _, title, _ := scanClaude(cl); title != "Auth work" {
 		t.Fatalf("claude title = %q, want the /rename name", title)
+	}
+	renameClaudeSession(aiSession{ID: "s", storePath: cl}, "Renamed in ptln")
+	if _, title, _ := scanClaude(cl); title != "Renamed in ptln" {
+		t.Fatalf("after ptln rename, claude title = %q", title)
+	}
+	_, title, named := scanClaude(cl)
+	meta := map[string]sessMeta{"s": {Name: "older ptln name"}}
+	if n := sessionName(aiSession{ID: "s", Title: title, Named: named}, meta); n != "Renamed in ptln" {
+		t.Fatalf("engine name must beat the sidecar, got %q", n)
 	}
 
 	os.MkdirAll(filepath.Join(dir, ".codex"), 0o700)
@@ -24,4 +33,8 @@ func TestEngineSessionNames(t *testing.T) {
 	if n := codexThreadNames(dir)["a"]; n != "New name" {
 		t.Fatalf("codex name = %q", n)
 	}
+	if !renameCodexSession(aiSession{Tool: "codex", ID: "a", root: dir}, "it's ptln's") || codexThreadNames(dir)["a"] != "it's ptln's" {
+		t.Fatalf("after ptln rename, codex name = %q", codexThreadNames(dir)["a"])
+	}
+
 }

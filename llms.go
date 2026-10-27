@@ -37,6 +37,7 @@ type aiSession struct {
 	ID         string    // the tool's native session id
 	Cwd        string    // recorded working dir ("" if the tool doesn't store one)
 	Title      string    // the engine's own session name (claude /rename, codex thread name), else the last user message
+	Named      bool      // Title is a name the user set in the engine (beats a ptln-only rename, which may be older)
 	LastActive time.Time // file mtime / recorded last-update
 	Live       bool      // active right now (store written within the last ~45s)
 	storePath  string    // path to the on-disk session file (for lazy detail load)
@@ -437,18 +438,49 @@ func claudeSessions(home string) []aiSession {
 		}
 		id := strings.TrimSuffix(filepath.Base(f), ".jsonl")
 		e := cachedScan(f, fi.Size(), func() scanEntry {
-			cwd, title := scanClaude(f)
-			return scanEntry{Cwd: cwd, Title: title}
+			cwd, title, named := scanClaude(f)
+			return scanEntry{Cwd: cwd, Title: title, Named: named}
 		})
 		out = append(out, aiSession{
-			Tool: "claude", ID: id, Cwd: e.Cwd, Title: e.Title, LastActive: fi.ModTime(),
+			Tool: "claude", ID: id, Cwd: e.Cwd, Title: e.Title, Named: e.Named, LastActive: fi.ModTime(),
 			storePath: f, resumeDir: e.Cwd, resumeArgv: []string{"claude", "--resume", id},
 		})
 	}
 	return out
 }
 
-func scanClaude(path string) (cwd, title string) {
+// renameInEngine writes a ptln rename into the engine's own store, so its resume picker shows the
+// same name and the scan reads it back as the session's name. false = not supported / not written.
+func renameInEngine(s aiSession, name string) bool {
+	switch s.Tool {
+	case "claude":
+		return renameClaudeSession(s, name)
+	case "codex":
+		return renameCodexSession(s, name)
+	}
+	return false
+}
+
+// renameClaudeSession appends the same custom-title line claude's own /rename writes, so the name
+// shows in claude's resume picker too. Best-effort: an unwritable store just keeps the local name.
+func renameClaudeSession(s aiSession, name string) bool {
+	if s.storePath == "" {
+		return false
+	}
+	line, err := json.Marshal(map[string]string{"type": "custom-title", "customTitle": name, "sessionId": s.ID})
+	if err != nil {
+		return false
+	}
+	f, err := os.OpenFile(s.storePath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	_, err = f.Write(append(line, '\n'))
+	return err == nil
+}
+
+func scanClaude(path string) (cwd, title string, named bool) {
 	f, err := os.Open(path)
 	if err != nil {
 		return
@@ -487,10 +519,10 @@ func scanClaude(path string) (cwd, title string) {
 	// it isn't yours at all — it's the "This session is being continued…" summary, which renders
 	// every compacted session identically. That is how a session becomes unfindable in a list of
 	// eight. What you actually remember is the last thing you asked for — unless you NAMED it.
-	if t := lastUserTitle(f); t != "" {
-		return cwd, t
+	if t, named := lastUserTitle(f); t != "" {
+		return cwd, t, named
 	}
-	return cwd, firstTitle
+	return cwd, firstTitle, false
 }
 
 // lastUserTitle reads backward from EOF for the session's name (a custom-title / agent-name line,
@@ -498,11 +530,11 @@ func scanClaude(path string) (cwd, title string) {
 // scan; "" when the tail holds only tool results and command echoes (cleanTitle rejects those),
 // which leaves the caller on its first-message fallback.
 // ponytail: a rename older than the 512KB tail is missed; claude re-appends it on resume, which covers most.
-func lastUserTitle(f *os.File) string {
+func lastUserTitle(f *os.File) (title string, named bool) {
 	const tail = 512 << 10
 	fi, err := f.Stat()
 	if err != nil {
-		return ""
+		return "", false
 	}
 	start := fi.Size() - tail
 	if start < 0 {
@@ -510,13 +542,12 @@ func lastUserTitle(f *os.File) string {
 	}
 	buf := make([]byte, fi.Size()-start)
 	if _, err := f.ReadAt(buf, start); err != nil && len(buf) == 0 {
-		return ""
+		return "", false
 	}
 	lines := bytes.Split(buf, []byte{'\n'})
 	if start > 0 && len(lines) > 0 {
 		lines = lines[1:] // the window opened mid-line; that fragment isn't parseable JSON
 	}
-	title := ""
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := lines[i]
 		if len(line) == 0 || len(line) > 256<<10 {
@@ -536,13 +567,13 @@ func lastUserTitle(f *os.File) string {
 			continue
 		}
 		if n := strings.TrimSpace(cmp.Or(ev.CustomTitle, ev.AgentName)); n != "" {
-			return n
+			return n, true
 		}
 		if title == "" && ev.Type == "user" {
 			title = firstUserText(ev.Message)
 		}
 	}
-	return title
+	return title, false
 }
 
 // Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl
@@ -567,12 +598,12 @@ func codexSessions(home string) []aiSession {
 		if ent.ID == "" {
 			return nil
 		}
-		title := ent.Title
-		if n := names[ent.ID]; n != "" {
-			title = n
+		title, named := ent.Title, names[ent.ID] != ""
+		if named {
+			title = names[ent.ID]
 		}
 		out = append(out, aiSession{
-			Tool: "codex", ID: ent.ID, Cwd: ent.Cwd, Title: title, LastActive: fi.ModTime(),
+			Tool: "codex", ID: ent.ID, Cwd: ent.Cwd, Title: title, Named: named, LastActive: fi.ModTime(),
 			storePath: p, resumeDir: ent.Cwd, resumeArgv: []string{"codex", "resume", ent.ID},
 		})
 		return nil
@@ -599,6 +630,38 @@ func codexThreadNames(home string) map[string]string {
 		}
 	}
 	return names
+}
+
+// renameCodexSession records a name the way codex's own /rename does: a new line in
+// session_index.jsonl (what codexThreadNames reads back) plus the threads.name column of its state
+// db. The db write shells out to sqlite3 and is best-effort — no sqlite3 on PATH, or a schema that
+// moved on, just leaves the index line, which is what codex's resume lookup reads.
+func renameCodexSession(s aiSession, name string) bool {
+	home := s.root
+	if home == "" {
+		home, _ = os.UserHomeDir()
+	}
+	dir := filepath.Join(home, ".codex")
+	line, err := json.Marshal(map[string]string{"id": s.ID, "thread_name": name, "updated_at": time.Now().UTC().Format(time.RFC3339Nano)})
+	if err != nil {
+		return false
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "session_index.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return false
+	}
+	_, err = f.Write(append(line, '\n'))
+	f.Close()
+	if err != nil {
+		return false
+	}
+	q := func(v string) string { return "'" + strings.ReplaceAll(v, "'", "''") + "'" }
+	dbs, _ := filepath.Glob(filepath.Join(dir, "state_*.sqlite"))
+	for _, db := range dbs {
+		_ = exec.Command("sqlite3", "-cmd", ".timeout 2000", db,
+			"UPDATE threads SET name = "+q(name)+" WHERE id = "+q(s.ID)).Run()
+	}
+	return true
 }
 
 func scanCodex(path string) (id, cwd, title string) {
