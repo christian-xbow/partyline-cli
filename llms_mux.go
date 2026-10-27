@@ -454,7 +454,16 @@ type llmsHome struct {
 	inPane bool
 }
 
+// autoRefreshEvery is how often the idle launcher re-scans the stores, so a session's model,
+// status and title (e.g. after a /model switch and its next reply) update without pressing R.
+const autoRefreshEvery = 10 * time.Second
+
 func (h *llmsHome) Render(cols, rows int) {
+	// Skipped while a prompt is open: its target is the selected row, and a re-scan mid-prompt
+	// could reorder the list under it.
+	if m := h.m; time.Since(m.refreshedAt) >= autoRefreshEvery && !m.picking && !m.renaming && m.confirmDelete == nil && !m.help {
+		m.refresh()
+	}
 	h.m.w, h.m.h = cols, rows
 	if h.m.w < 40 || h.m.h < 10 {
 		h.m.w, h.m.h = 80, 24
@@ -747,6 +756,11 @@ func runLLMSApp(initial []ptymux.Spec) error {
 	mx.KeepGoingFn = func() { keepGoingToggleMenu(mx) }                 // ctrl-\ g: arm/disarm keep-going on this session
 	mx.NewPaneHomeFn = func() ptymux.PaneHome { return newPaneHome(h) } // `|` / ctrl-\ |: one manager per pane
 	startWorkspaceWatch(mx)                                             // keep the --resume snapshot current, so a kill can't strand it on the last clean quit
+	go func() {                                                         // wake the idle launcher so Render's auto-refresh runs; a no-op paint-wise inside a session
+		for range time.Tick(autoRefreshEvery) {
+			mx.Wake()
+		}
+	}()
 	// If the identity cache is empty (logged in before this existed), fetch it once in the
 	// background and repaint — never block the launcher's startup on the network.
 	if m.account() == "" && api.LoadToken() != "" {

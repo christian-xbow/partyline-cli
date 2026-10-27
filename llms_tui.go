@@ -141,6 +141,7 @@ type aiMenu struct {
 	focusR        bool        // detail (right) pane focused for scrolling
 	dTop          int         // detail scroll offset (when focusR)
 	dLen          int         // last-rendered detail line count (for scroll clamping)
+	refreshedAt   time.Time   // last refresh(); the idle launcher re-scans once this is autoRefreshEvery old
 	fd            int         // tty fd — for suspend/resume around the diff viewer
 	oldState      *term.State // cooked terminal state, restored when suspending
 	// mux-hosted launcher state (see llms_mux.go). live marks sessions already running
@@ -504,6 +505,7 @@ func (m *aiMenu) refresh() {
 		cur = s.ID
 	}
 	m.all = collectSessions()
+	m.refreshedAt = time.Now()
 	detailCache = map[string]*aiDetail{}
 	m.applyFilter()
 	if cur != "" {
