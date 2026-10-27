@@ -761,13 +761,17 @@ func (m *aiMenu) handleKey(b []byte) (bool, *aiSession) {
 			m.confirmDelete = &sel
 			m.delFacts = gatherDeleteFacts(sel, m.view)
 		}
-	case 'o': // open in a new terminal tab; the menu stays up
+	case 'o', 'w': // open in a new terminal tab (o) or cmux workspace (w); the menu stays up
 		if s := m.selected(); s != nil {
 			if s.resumeArgv == nil {
 				m.flash = s.Tool + " sessions are list-only (no recorded path to resume into)"
 				return false, nil
 			}
-			if msg, err := openInNewTab(*s); err != nil {
+			open := openInNewTab
+			if c == 'w' {
+				open = openInCmuxWorkspace
+			}
+			if msg, err := open(*s); err != nil {
 				m.flash = err.Error()
 			} else {
 				m.flash = "✓ " + msg
@@ -1748,6 +1752,7 @@ var aiMenuKeys = [][2]string{
 	{"ctrl-n", "the same, with permissions bypassed"},
 	{"n", "new — an AI session with options, or a plain terminal"},
 	{"o", "open the session in a new terminal tab"},
+	{"w", "open the session in a new cmux workspace (cmux only)"},
 	{"r", "rename (custom title for findability; empty resets)"},
 	{"→ · tab", "focus the detail pane (↑↓ scroll · ← back)"},
 	{"d", "view the session repo's git diff"},

@@ -20,11 +20,7 @@ import (
 // openInNewTab launches `ptln llms resume <id>` in a new tab/window of the
 // hosting terminal. Returns a short status string for the menu's flash line.
 func openInNewTab(s aiSession) (string, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		exe = "partyline"
-	}
-	cmd := fmt.Sprintf("%s llms resume %s", shQuote(exe), s.ID)
+	cmd := resumeCmd(s)
 
 	switch {
 	case os.Getenv("TMUX") != "":
@@ -130,6 +126,31 @@ end tell`, asQuote(cmd))
 		}
 	}
 	return "", fmt.Errorf("new-tab not supported in this terminal — works in tmux, cmux, iTerm2, Terminal.app, WezTerm, kitty, Ghostty, Alacritty, GNOME Terminal, Konsole")
+}
+
+// openInCmuxWorkspace launches `ptln llms resume <id>` in a new cmux workspace named after the
+// session. cmux only: other terminals have no workspace concept to map it to.
+func openInCmuxWorkspace(s aiSession) (string, error) {
+	if os.Getenv("CMUX_SOCKET_PATH") == "" {
+		return "", fmt.Errorf("new workspace needs cmux — o opens a new tab here")
+	}
+	args := []string{"new-workspace", "--name", muxLabelFor(s, loadLLMMeta()), "--command", resumeCmd(s)}
+	if s.resumeDir != "" {
+		args = append(args, "--cwd", s.resumeDir)
+	}
+	if err := exec.Command("cmux", args...).Run(); err != nil {
+		return "", fmt.Errorf("cmux new-workspace: %w", err)
+	}
+	return "opened in a new cmux workspace", nil
+}
+
+// resumeCmd is the shell command a new tab/workspace runs to resume s.
+func resumeCmd(s aiSession) string {
+	exe, err := os.Executable()
+	if err != nil {
+		exe = "partyline"
+	}
+	return fmt.Sprintf("%s llms resume %s", shQuote(exe), s.ID)
 }
 
 // shQuote single-quotes a string for sh (the resume id/path may carry spaces).
