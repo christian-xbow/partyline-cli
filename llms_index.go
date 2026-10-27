@@ -27,7 +27,8 @@ var (
 	scanDirty bool
 )
 
-func scanIndexPath() string { return filepath.Join(stateDir(), "scan-index.json") }
+// v2: titles now carry claude /rename names, so entries cached before that must be rescanned.
+func scanIndexPath() string { return filepath.Join(stateDir(), "scan-index-v2.json") }
 
 // beginScanPass loads the cache (once) and resets the per-pass seen-set.
 func beginScanPass() {

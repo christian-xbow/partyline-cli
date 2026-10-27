@@ -14,6 +14,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -35,7 +36,7 @@ type aiSession struct {
 	Tool       string    // claude | codex | gemini | antigravity | llm
 	ID         string    // the tool's native session id
 	Cwd        string    // recorded working dir ("" if the tool doesn't store one)
-	Title      string    // first user message, trimmed
+	Title      string    // the engine's own session name (claude /rename, codex thread name), else the last user message
 	LastActive time.Time // file mtime / recorded last-update
 	Live       bool      // active right now (store written within the last ~45s)
 	storePath  string    // path to the on-disk session file (for lazy detail load)
@@ -485,16 +486,18 @@ func scanClaude(path string) (cwd, title string) {
 	// message is months stale ("read the memory files for this project"), and in a COMPACTED one
 	// it isn't yours at all — it's the "This session is being continued…" summary, which renders
 	// every compacted session identically. That is how a session becomes unfindable in a list of
-	// eight. What you actually remember is the last thing you asked for.
+	// eight. What you actually remember is the last thing you asked for — unless you NAMED it.
 	if t := lastUserTitle(f); t != "" {
 		return cwd, t
 	}
 	return cwd, firstTitle
 }
 
-// lastUserTitle reads backward from EOF for the most recent real user message. Bounded like the
-// prefix scan; "" when the tail holds only tool results and command echoes (cleanTitle rejects
-// those), which leaves the caller on its first-message fallback.
+// lastUserTitle reads backward from EOF for the session's name (a custom-title / agent-name line,
+// written by claude's /rename), else the most recent real user message. Bounded like the prefix
+// scan; "" when the tail holds only tool results and command echoes (cleanTitle rejects those),
+// which leaves the caller on its first-message fallback.
+// ponytail: a rename older than the 512KB tail is missed; claude re-appends it on resume, which covers most.
 func lastUserTitle(f *os.File) string {
 	const tail = 512 << 10
 	fi, err := f.Stat()
@@ -513,23 +516,33 @@ func lastUserTitle(f *os.File) string {
 	if start > 0 && len(lines) > 0 {
 		lines = lines[1:] // the window opened mid-line; that fragment isn't parseable JSON
 	}
+	title := ""
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := lines[i]
 		if len(line) == 0 || len(line) > 256<<10 {
 			continue
 		}
-		var ev struct {
-			Type    string          `json:"type"`
-			Message json.RawMessage `json:"message"`
-		}
-		if json.Unmarshal(line, &ev) != nil || ev.Type != "user" {
+		// Once a title is in hand only a name line can still matter — skip the JSON parse.
+		if title != "" && !bytes.Contains(line, []byte(`"customTitle"`)) && !bytes.Contains(line, []byte(`"agentName"`)) {
 			continue
 		}
-		if t := firstUserText(ev.Message); t != "" {
-			return t
+		var ev struct {
+			Type        string          `json:"type"`
+			Message     json.RawMessage `json:"message"`
+			CustomTitle string          `json:"customTitle"`
+			AgentName   string          `json:"agentName"`
+		}
+		if json.Unmarshal(line, &ev) != nil {
+			continue
+		}
+		if n := strings.TrimSpace(cmp.Or(ev.CustomTitle, ev.AgentName)); n != "" {
+			return n
+		}
+		if title == "" && ev.Type == "user" {
+			title = firstUserText(ev.Message)
 		}
 	}
-	return ""
+	return title
 }
 
 // Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl
@@ -537,6 +550,7 @@ func lastUserTitle(f *os.File) string {
 // response_item/event_msg lines carry the conversation. Resume: `codex resume <id>`.
 func codexSessions(home string) []aiSession {
 	root := filepath.Join(home, ".codex", "sessions")
+	names := codexThreadNames(home)
 	var out []aiSession
 	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasPrefix(d.Name(), "rollout-") || !strings.HasSuffix(p, ".jsonl") {
@@ -553,13 +567,38 @@ func codexSessions(home string) []aiSession {
 		if ent.ID == "" {
 			return nil
 		}
+		title := ent.Title
+		if n := names[ent.ID]; n != "" {
+			title = n
+		}
 		out = append(out, aiSession{
-			Tool: "codex", ID: ent.ID, Cwd: ent.Cwd, Title: ent.Title, LastActive: fi.ModTime(),
+			Tool: "codex", ID: ent.ID, Cwd: ent.Cwd, Title: title, LastActive: fi.ModTime(),
 			storePath: p, resumeDir: ent.Cwd, resumeArgv: []string{"codex", "resume", ent.ID},
 		})
 		return nil
 	})
 	return out
+}
+
+// codexThreadNames maps session id → thread name from ~/.codex/session_index.jsonl (append-only;
+// a /rename appends a new line, so the last one per id wins). Read fresh every pass, not via the
+// scan cache: renaming touches this file, not the rollout.
+func codexThreadNames(home string) map[string]string {
+	b, err := os.ReadFile(filepath.Join(home, ".codex", "session_index.jsonl"))
+	if err != nil {
+		return nil
+	}
+	names := map[string]string{}
+	for _, line := range bytes.Split(b, []byte{'\n'}) {
+		var ev struct {
+			ID   string `json:"id"`
+			Name string `json:"thread_name"`
+		}
+		if json.Unmarshal(line, &ev) == nil && ev.ID != "" {
+			names[ev.ID] = strings.Trim(strings.TrimSpace(ev.Name), `"`)
+		}
+	}
+	return names
 }
 
 func scanCodex(path string) (id, cwd, title string) {
