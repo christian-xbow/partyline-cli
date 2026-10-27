@@ -31,6 +31,8 @@ type gateVerdict struct {
 	Refuse bool
 	Reason string // why, phrased so an agent can fix the fact rather than retry it verbatim
 	Hint   string // what to do with it instead
+	// Matched is the text that tripped the rule, quoted back so the author can see what to change.
+	Matched string
 }
 
 // scopeRule is one observed failure shape.
@@ -103,12 +105,15 @@ func screenFact(kind, body string) gateVerdict {
 	// A question is exempt from the transient shapes: "is port 5900 reachable" is a bad FACT but
 	// an open question about unresolved work is exactly what `question` is for, and refusing those
 	// pushes agents into inventing answers — the failure this whole system exists to prevent.
-	if kind == "question" {
+	// The overview is a description of the repository, not a one-line claim, and it may well
+	// mention a ticket or a past date. It is exempt here, so edit and append treat it the same as
+	// add does; a first real run had a correct overview refused on edit.
+	if kind == "question" || kind == "overview" {
 		return gateVerdict{}
 	}
 	for _, r := range transientShapes {
-		if r.match.MatchString(b) {
-			return gateVerdict{Refuse: true, Reason: r.reason, Hint: r.hint}
+		if m := r.match.FindString(b); m != "" {
+			return gateVerdict{Refuse: true, Reason: r.reason, Hint: r.hint, Matched: m}
 		}
 	}
 	return gateVerdict{}
@@ -121,6 +126,10 @@ func (v gateVerdict) gateError() error {
 		return nil
 	}
 	msg := "not a durable fact: " + v.Reason
+	if v.Matched != "" {
+		// Name the words that tripped it; without them the only option is to reword blind.
+		msg += fmt.Sprintf("\n  matched: %q", strings.TrimSpace(v.Matched))
+	}
 	if v.Hint != "" {
 		msg += "\n  " + v.Hint
 	}

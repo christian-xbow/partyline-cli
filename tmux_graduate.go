@@ -546,19 +546,35 @@ func tmuxIdentityEnv(sp ptymux.Spec) []string {
 // Composite for a pair, plain for a lone session, so unsplitting restores the simple name without a
 // second code path. Auxiliary panes (the feed, a shell) carry no spec and are skipped: a session
 // beside its feed is still one session, the same rule parseSessionPanes applies.
+//
+// A pane partyline did not start (an engine run by hand in a shell) has no spec. It is named after
+// the engine running on its terminal and its directory, "codex · devopsforcitizendevs". Returning
+// early instead, as this once did, left a tab named after the session that had just moved OUT of it:
+// a Codex pane sat under "Partyline Original" because that session had shared its window. A window
+// with nothing nameable at all gets tmux's automatic naming back.
 func tmuxRenameForPanes(window string) {
-	out, err := tmuxCmd("list-panes", "-t", window, "-F", "#{@ptln_spec}").Output()
+	out, err := tmuxCmd("list-panes", "-t", window, "-F", "#{@ptln_spec}\t#{pane_tty}\t#{pane_current_path}").Output()
 	if err != nil {
 		return
 	}
 	var labels []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if sp, ok := decodePaneSpec(strings.TrimSpace(line)); ok && sp.Label != "" {
+	// Trim only the newline: a pane with no spec prints an empty first field, so its line starts
+	// with a tab, and TrimSpace would shift every field by one.
+	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		f := strings.SplitN(line, "\t", 3)
+		if sp, ok := decodePaneSpec(strings.TrimSpace(f[0])); ok && sp.Label != "" {
 			labels = append(labels, sp.Label)
+			continue
+		}
+		if len(f) == 3 {
+			if eng := paneEngine(f[1]); eng != "" {
+				labels = append(labels, eng+" · "+filepath.Base(f[2]))
+			}
 		}
 	}
 	if len(labels) == 0 {
-		return // nothing nameable in there; leave whatever is on it
+		_ = tmuxCmd("set-option", "-w", "-t", window, "automatic-rename", "on").Run()
+		return
 	}
 	name := labels[0]
 	for _, l := range labels[1:] {

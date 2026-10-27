@@ -92,6 +92,11 @@ func memoryHookMain() {
 	}
 	seen := loadSeen(in.SessionID)
 	if seen.LastAt.IsZero() {
+		// The first turn is also when to say the memory has fallen behind the code, at most once
+		// per memoryDriftThreshold commits (memory_drift.go).
+		if isRepoLocalMemory(ws.Dir) {
+			fmt.Print(memoryDriftNotice(ws.Dir))
+		}
 		// First turn of a session that was already running when memory arrived, or a fresh one:
 		// mark the current state as seen WITHOUT printing a wall of history. The session-start
 		// brief covers what exists; this hook's job is only what changes from here.

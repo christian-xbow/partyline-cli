@@ -227,24 +227,38 @@ func deriveMigrations(inv repoInventory) (derivedFact, bool) {
 	}, true
 }
 
-// buildQuestions are the things reading the code cannot answer, ranked by how expensive a wrong
-// assumption is. Deliberately short: forty questions get skipped, five get answered.
+// buildQuestions are the things reading the code cannot answer. Most are about purpose and people,
+// not code: who it is for, what it replaced, who to ask, what breaks without it. A first real run
+// asked only code archaeology, and the answers that made the memory worth having were exactly the
+// ones no question asked for. Kept short: forty questions get skipped, a handful get answered.
 //
 // They are recorded as `question` facts rather than asked interactively, because the person who
-// can answer them is usually not the person running the command, and an unanswered question in
-// the repo is itself useful — it tells the next session that nobody has established this.
+// can answer them is usually not the person running the command. In the setup a session runs, the
+// agent drafts answers from the README and docs and asks the person to correct them.
 var buildQuestions = []derivedFact{
+	{Topic: "q-purpose", Kind: "question", Extra: []string{"overview"},
+		Body:    "Who is this for, and what problem does it solve for them?",
+		Sources: []string{"build:not-derivable-from-code"}},
+	{Topic: "q-before", Kind: "question",
+		Body:    "What did people do before this existed, and what did it replace?",
+		Sources: []string{"build:not-derivable-from-code"}},
+	{Topic: "q-owner", Kind: "question",
+		Body:    "Who maintains this, and who should be asked when it breaks?",
+		Sources: []string{"build:not-derivable-from-code"}},
+	{Topic: "q-impact", Kind: "question",
+		Body:    "What stops working for people or the business if this goes down?",
+		Sources: []string{"build:not-derivable-from-code"}},
+	{Topic: "q-next", Kind: "question",
+		Body:    "What should be built on this next, and what has been ruled out?",
+		Sources: []string{"build:not-derivable-from-code"}},
 	{Topic: "q-never-change", Kind: "question",
 		Body:    "What must not change because another system depends on it (wire formats, file names, orderings)?",
 		Sources: []string{"build:not-derivable-from-code"}},
-	{Topic: "q-deliberately-weird", Kind: "question",
-		Body:    "What looks wrong in this code but is intentional?",
-		Sources: []string{"build:not-derivable-from-code"}},
-	{Topic: "q-dead", Kind: "question",
-		Body:    "Which code is unused and can be removed?",
-		Sources: []string{"build:not-derivable-from-code"}},
 	{Topic: "q-deploy", Kind: "question",
 		Body:    "How is this deployed, and what must be deployed with it or before it?",
+		Sources: []string{"build:not-derivable-from-code"}},
+	{Topic: "q-deliberately-weird", Kind: "question",
+		Body:    "What looks wrong in this code but is intentional?",
 		Sources: []string{"build:not-derivable-from-code"}},
 }
 
@@ -336,16 +350,18 @@ func topicOf(f fact) string {
 	return ""
 }
 
-// memoryBuildCmd is `ptln memory build [--apply] [--remove-stale]`.
+// memoryBuildCmd is `ptln memory build [--apply] [--remove-stale] [--refresh]`.
 //
 // A dry run by DEFAULT. The plan's rule is propose, don't commit: a seed is bulk curation, and the
 // one thing worse than no facts is a pile of unreviewed ones that everybody then stops reading.
 func memoryBuildCmd(args []string) {
-	apply, removeStale := false, false
+	apply, removeStale, refresh := false, false, false
 	for _, a := range args {
 		switch a {
 		case "--apply":
 			apply = true
+		case "--refresh":
+			refresh = true
 		case "--remove-stale":
 			removeStale = true
 		}
@@ -358,11 +374,17 @@ func memoryBuildCmd(args []string) {
 	if err != nil {
 		fatal(err)
 	}
+	facts, _ := readFacts(ws.Dir, false)
+	printMemoryDrift(ws.Dir, facts)
 	_, hasOverview := currentOverview(ws.Dir)
 	if len(actions) == 0 {
-		if apply && !hasOverview {
-			ensureOverview(ws)
+		if apply && (!hasOverview || refresh) {
+			ensureOverview(ws, refresh)
 			refreshMemoryMap(ws)
+			return
+		}
+		if refresh && hasOverview {
+			fmt.Println("~ overview         rewritten on --apply from the last commit, starting from the current one")
 			return
 		}
 		fmt.Println("nothing to change — the derived facts already match the repo")
@@ -387,13 +409,20 @@ func memoryBuildCmd(args []string) {
 			removed++
 		}
 	}
+	if refresh && hasOverview {
+		fmt.Printf("~ %-16s %s\n", "overview", "rewritten on --apply from the last commit, starting from the current one")
+	}
 	if !hasOverview {
 		fmt.Printf("+ %-16s %s\n", "overview", "a description of the project, generated on --apply by claude reading the repository")
 	}
 	fmt.Printf("\n%d to add, %d to update, %d stale\n", added, updated, removed)
 
 	if !apply {
-		fmt.Println("\nnothing written. `ptln memory build --apply` to record these.")
+		hint := "ptln memory build --apply"
+		if refresh {
+			hint += " --refresh"
+		}
+		fmt.Printf("\nnothing written. `%s` to record these.\n", hint)
 		if removed > 0 {
 			fmt.Println("stale derived facts are left alone unless you add --remove-stale.")
 		}
@@ -430,7 +459,7 @@ func memoryBuildCmd(args []string) {
 		}
 	}
 	fmt.Printf("\n✓ %d fact(s) written to %s\n", wrote, memoryDir(ws.Dir))
-	ensureOverview(ws)
+	ensureOverview(ws, refresh)
 	refreshMemoryMap(ws)
 	fmt.Println("  review them with `git diff` before you commit — they are proposals, not gospel")
 }

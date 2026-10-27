@@ -6,15 +6,8 @@ package main
 
 import (
 	"fmt"
-	"os"
-	"os/signal"
 	"strings"
-	"sync"
-	"sync/atomic"
-	"syscall"
 	"time"
-
-	"golang.org/x/term"
 )
 
 const chatUsage = `usage:
@@ -122,14 +115,63 @@ func chatWho() string {
 			if m.Engine == "codex" {
 				state = "woken when a message arrives"
 			}
+			if m.Paused {
+				state += "; delivery stopped (/go " + strings.TrimPrefix(strings.Fields(m.Name)[0], "#") + ")"
+			}
 			fmt.Fprintf(&b, "%-14s %s\n", m.Name, state)
 		}
-		if r.paused() {
-			fmt.Fprintf(&b, "agents have posted %d messages in a row; they wait for you to say something\n", r.AgentRun)
+		switch {
+		case r.Stopped:
+			b.WriteString("delivery is stopped (/stop); /go or your next message resumes it\n")
+		case r.paused():
+			fmt.Fprintf(&b, "the sessions posted %d messages in a row; they wait for you to say something\n", r.AgentRun)
 		}
 		return nil
 	})
 	return b.String()
+}
+
+// chatStop pauses delivery (stop=true) or resumes it, for the whole room when no tabs are given,
+// otherwise for those members.
+func chatStop(refs []string, stop bool) string {
+	var said []string
+	_ = withChatLock(func(r *chatRoom) error {
+		if len(refs) == 0 {
+			r.Stopped = stop
+			for i := range r.Members {
+				if !stop {
+					r.Members[i].Paused = false
+				}
+			}
+			if stop {
+				said = append(said, "delivery to every session stopped; /go or your next message resumes it")
+			} else {
+				r.AgentRun = 0
+				said = append(said, "delivery resumed")
+			}
+			return nil
+		}
+		for _, ref := range refs {
+			ref = strings.TrimPrefix(ref, "#")
+			found := false
+			for i := range r.Members {
+				m := &r.Members[i]
+				if strings.TrimPrefix(strings.Fields(m.Name)[0], "#") == ref || m.Key == ref {
+					m.Paused, found = stop, true
+					if stop {
+						said = append(said, m.Name+": delivery stopped until /go "+ref)
+					} else {
+						said = append(said, m.Name+": delivery resumed")
+					}
+				}
+			}
+			if !found {
+				said = append(said, "nobody in the room is in tab "+ref)
+			}
+		}
+		return nil
+	})
+	return strings.Join(said, "\n")
 }
 
 // chatSendSelf posts as the calling session. Run by agents.
@@ -163,7 +205,7 @@ func chatReadSelf() {
 			text = "this session is not in the chat\n"
 			return nil
 		}
-		if msgs := unreadFor(readChat(), *me); len(msgs) > 0 {
+		if msgs := unreadFor(readChat(), *me); len(msgs) > 0 && !r.held(*me) {
 			me.Read, me.Answering, me.Sent, me.Active, me.Delivered = msgs[len(msgs)-1].Seq, true, false, time.Now(), time.Now()
 			text = chatDeliveryText(*me, msgs, r)
 		} else {
@@ -196,7 +238,7 @@ func chatWakeIdle(lastTry map[string]time.Time, setWake func(key, why string, dr
 				setWake(m.Key, "", true)
 				continue
 			}
-			if r.paused() || (m.Engine == "claude" && chatListening(m.Key)) {
+			if r.held(m) || (m.Engine == "claude" && chatListening(m.Key)) {
 				continue
 			}
 			quiet := chatWakeQuiet
@@ -230,171 +272,5 @@ func chatWakeIdle(lastTry map[string]time.Time, setWake func(key, why string, dr
 				setWake(d.key, "", false)
 			}
 		}
-	}
-}
-
-// --- the room's screen (message layout is in chat_format.go) ------------------------------------
-
-func chatRoomUI() {
-	fd := int(os.Stdin.Fd())
-	if !term.IsTerminal(fd) {
-		fatal(fmt.Errorf("ptln chat needs a terminal; use `ptln chat send` from scripts"))
-	}
-	_ = os.MkdirAll(chatDir(), 0o700)
-	_ = withChatLock(func(*chatRoom) error { return nil }) // create the room so hooks see it
-	old, err := term.MakeRaw(fd)
-	if err != nil {
-		fatal(err)
-	}
-	// Restore the terminal however the room ends: normally, on a signal, or on a panic in the
-	// feed goroutine. Without this a crash leaves the terminal in raw mode with bracketed paste on.
-	restore := func() {
-		fmt.Print(pasteOff)
-		_ = term.Restore(fd, old)
-	}
-	defer restore()
-	fmt.Print(pasteOn)
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
-	go func() {
-		<-sigs
-		restore()
-		os.Exit(1)
-	}()
-
-	var mu sync.Mutex
-	in := &chatInput{}
-	// printAbove puts text above the input area, then redraws the input under it.
-	printAbove := func(s string) {
-		fmt.Print(in.clear() + strings.ReplaceAll(s, "\n", "\r\n") + "\r\n" + in.draw(chatWidth()))
-	}
-
-	msgs := readChat()
-	seen := 0
-	fmt.Print("\x1b[2mpartyline chat · /add <tab> brings a session in · /who · /remove <tab> · Alt-Enter for a new line · ctrl-c leaves\x1b[0m\r\n")
-	for _, m := range msgs[max(0, len(msgs)-40):] {
-		fmt.Print("\r\n" + strings.ReplaceAll(chatFormat(m, chatWidth()), "\n", "\r\n") + "\r\n")
-	}
-	if len(msgs) > 0 {
-		seen = msgs[len(msgs)-1].Seq
-	}
-	fmt.Print(in.draw(chatWidth()))
-
-	done := make(chan struct{})
-	go func() { // the feed, the status lines, and waking idle members
-		defer func() {
-			if p := recover(); p != nil {
-				restore()
-				fmt.Fprintf(os.Stderr, "\nptln chat: %v\n", p)
-				os.Exit(1)
-			}
-		}()
-		tries, wake := map[string]time.Time{}, map[string]string{}
-		var wakeMu sync.Mutex // guards wake only, and only ever briefly
-		var waking atomic.Bool
-		setWake := func(key, why string, drop bool) {
-			wakeMu.Lock()
-			defer wakeMu.Unlock()
-			if drop {
-				delete(wake, key)
-			} else {
-				wake[key] = why
-			}
-		}
-		statusNow := func() ([]string, bool) {
-			msgs := readChat()
-			room := loadChatRoom()
-			wakeMu.Lock()
-			defer wakeMu.Unlock()
-			return chatStatusLines(&room, msgs, wake, time.Now())
-		}
-		spinning := false
-		for tick := 0; ; tick++ {
-			select {
-			case <-done:
-				return
-			case <-time.After(100 * time.Millisecond):
-			}
-			if tick%5 == 0 { // twice a second: new messages and member state
-				msgs := readChat()
-				lines, spin := statusNow()
-				mu.Lock()
-				for _, m := range msgs {
-					if m.Seq > seen {
-						seen = m.Seq
-						printAbove("\n" + chatFormat(m, chatWidth()))
-					}
-				}
-				changed := strings.Join(lines, "\n") != strings.Join(in.status, "\n")
-				in.status, spinning = lines, spin
-				if changed {
-					fmt.Print(in.draw(chatWidth()))
-				}
-				mu.Unlock()
-			} else if spinning { // animate the spinners in between
-				lines, spin := statusNow()
-				mu.Lock()
-				in.status, spinning = lines, spin
-				fmt.Print(in.draw(chatWidth()))
-				mu.Unlock()
-			}
-			if tick%20 == 0 && waking.CompareAndSwap(false, true) { // every two seconds, one pass at a time
-				go func() {
-					defer waking.Store(false)
-					chatWakeIdle(tries, setWake)
-				}()
-			}
-		}
-	}()
-	defer close(done)
-
-	buf := make([]byte, 4096)
-	for {
-		n, err := os.Stdin.Read(buf)
-		if err != nil {
-			return
-		}
-		mu.Lock()
-		send, quit := in.handle(buf[:n])
-		for _, text := range send {
-			chatSubmit(text, printAbove)
-		}
-		fmt.Print(in.draw(chatWidth()))
-		mu.Unlock()
-		if quit {
-			fmt.Print("\r\n")
-			return
-		}
-	}
-}
-
-func chatSubmit(line string, say func(string)) {
-	f := strings.Fields(line)
-	switch f[0] {
-	case "/add":
-		say("\x1b[2m" + chatAdd(f[1:]) + "\x1b[0m")
-		return
-	case "/remove", "/rm":
-		say("\x1b[2m" + chatRemove(f[1:]) + "\x1b[0m")
-		return
-	case "/who":
-		say("\x1b[2m" + strings.TrimRight(chatWho(), "\n") + "\x1b[0m")
-		return
-	case "/help":
-		say("\x1b[2m" + chatUsage + "\x1b[0m")
-		return
-	}
-	unmatched := ""
-	_ = withChatLock(func(r *chatRoom) error {
-		to := chatAddressees(r, line)
-		if to == nil && chatHasMention(line) {
-			unmatched = "no session in the room matches the @ in that message; it was not sent (use @all for everyone)"
-			return nil
-		}
-		_, err := postLocked(r, chatMessage{From: "you", Name: "you", To: to, Text: line})
-		return err
-	})
-	if unmatched != "" {
-		say("\x1b[2m" + unmatched + "\x1b[0m")
 	}
 }

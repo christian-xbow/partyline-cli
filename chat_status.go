@@ -7,6 +7,7 @@ package main
 import (
 	"fmt"
 	"hash/fnv"
+	"strings"
 	"time"
 )
 
@@ -32,20 +33,46 @@ func chatSpinFrame(now time.Time) string {
 }
 
 // chatStatusLines describes every member that has something going on. wake holds the last reason
-// a wake was held back for a member ("" once woken). The second result is true while any line is
-// animated, so the room knows to keep redrawing.
-func chatStatusLines(r *chatRoom, msgs []chatMessage, wake map[string]string, now time.Time) ([]string, bool) {
+// a wake was held back for a member ("" once woken); act holds what each member is doing in its own
+// tab (chat_activity.go). The second result is true while any line is animated.
+//
+// One line per member, by priority: waiting for your approval, working on a chat message, working
+// in its tab, a message on its way, idle with messages waiting, just replied. Lines show during a
+// pause too: a pause stops delivery, not the sessions.
+func chatStatusLines(r *chatRoom, msgs []chatMessage, wake map[string]string, act map[string]memberActivity, now time.Time) ([]string, bool) {
 	var lines []string
 	spinning := false
 	spin := chatSpinFrame(now)
 	for _, m := range r.Members {
-		waiting := len(unreadFor(msgs, m)) > 0
+		a := act[m.Key]
+		tab := strings.TrimPrefix(strings.Fields(m.Name + " ")[0], "#")
+		doing := ""
+		if a.Doing != "" {
+			doing = " · " + a.Doing
+		}
+		unread := len(unreadFor(msgs, m))
+		waiting := unread > 0
 		switch {
-		case m.Answering && !m.Sent:
+		case a.State == "approval":
+			lines = append(lines, fmt.Sprintf("‼ %s · waiting for your approval in tab %s%s", m.Name, tab, doing))
+		case m.Answering && !m.Sent && (a.State == "working" || now.Sub(m.Delivered) < chatAnswerGrace):
 			spinning = true
-			lines = append(lines, fmt.Sprintf("%s %s · %s… %s", spin, m.Name, chatVerb(m.Key, m.Read), chatElapsed(now.Sub(m.Delivered))))
+			lines = append(lines, fmt.Sprintf("%s %s · %s… %s%s", spin, m.Name, chatVerb(m.Key, m.Read), chatElapsed(now.Sub(m.Delivered)), doing))
+		case a.State == "working":
+			spinning = true
+			own := strings.TrimSpace(a.Verb + " " + a.Elapsed)
+			if own != "" {
+				own = " · " + own
+			}
+			extra := ""
+			if waiting {
+				extra = fmt.Sprintf(" · %d message%s waiting", unread, plural(unread, "", "s"))
+			}
+			lines = append(lines, fmt.Sprintf("%s %s · working in its tab%s%s%s", spin, m.Name, own, doing, extra))
+		case waiting && m.Paused && !r.paused():
+			lines = append(lines, fmt.Sprintf("· %s · idle, %d message%s waiting · stopped: /go %s delivers them", m.Name, unread, plural(unread, "", "s"), tab))
 		case waiting && r.paused():
-			// said once below
+			lines = append(lines, fmt.Sprintf("· %s · idle, %d message%s waiting (delivery paused)", m.Name, unread, plural(unread, "", "s")))
 		case waiting && chatListening(m.Key):
 			spinning = true
 			lines = append(lines, fmt.Sprintf("%s %s · receiving", spin, m.Name))
@@ -53,7 +80,7 @@ func chatStatusLines(r *chatRoom, msgs []chatMessage, wake map[string]string, no
 			why, tried := wake[m.Key]
 			switch {
 			case tried && why != "":
-				lines = append(lines, fmt.Sprintf("· %s · waiting: %s", m.Name, why))
+				lines = append(lines, fmt.Sprintf("· %s · idle, %d message%s waiting: %s", m.Name, unread, plural(unread, "", "s"), why))
 			case tried:
 				spinning = true
 				lines = append(lines, fmt.Sprintf("%s %s · waking up", spin, m.Name))
@@ -65,11 +92,20 @@ func chatStatusLines(r *chatRoom, msgs []chatMessage, wake map[string]string, no
 			lines = append(lines, fmt.Sprintf("✓ %s · replied", m.Name))
 		}
 	}
-	if r.paused() {
+	switch {
+	case r.Stopped:
+		lines = append(lines, "· delivery stopped (/stop): /go or your next message resumes it")
+	case r.paused():
 		lines = append(lines, fmt.Sprintf("· the sessions posted %d messages in a row; they wait for you to say something", r.AgentRun))
 	}
 	return lines, spinning
 }
+
+// chatAnswerGrace is how long a delivered message counts as being worked on before the session's
+// screen has to show it working. The flag behind that line is cleared by the session's Stop hook,
+// and sessions added to the room by tab number may have been started without one: a member that
+// read a message and chose not to reply then showed "weighing it… 763m" overnight.
+const chatAnswerGrace = 30 * time.Second
 
 func chatElapsed(d time.Duration) string {
 	if d < 0 || d > 24*time.Hour {

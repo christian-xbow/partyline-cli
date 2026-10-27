@@ -130,7 +130,9 @@ func renderMemoryMap(repoName string, facts []fact) string {
 	sb.WriteString("Facts about this repository, one file each in `memory/`. Treat them as correct unless the code\n")
 	sb.WriteString("contradicts them, and report any contradiction. Record a new decision, constraint, contract or\n")
 	sb.WriteString("gotcha with `ptln memory add <kind> \"...\"`, and correct a wrong entry with\n")
-	sb.WriteString("`ptln memory edit <id> \"...\"`. Do not commit `memory/` or this file; the user commits them.\n")
+	sb.WriteString("`ptln memory edit <id> \"...\"`. A decision says what was chosen, why, and what it costs. Name the\n")
+	sb.WriteString("evidence for each fact; if you cannot verify something, add a `question` instead of a guess.\n")
+	sb.WriteString("Do not commit `memory/` or this file; the user commits them.\n")
 
 	for i, s := range mapSections {
 		if len(buckets[i]) == 0 {

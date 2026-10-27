@@ -114,9 +114,10 @@ TRANSCRIPT:
 func captureDistil(dir, transcript string) []fact {
 	ctx, cancel := context.WithTimeout(context.Background(), captureTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "claude", "-p", capturePrompt(transcript),
+	// No tools: capture only reads the transcript it is given, and that transcript is text a
+	// session wrote, which must not be able to make this run act.
+	cmd := headlessClaude(ctx, dir, capturePrompt(transcript), "",
 		"--model", "claude-haiku-4-5-20251001", "--output-format", "json")
-	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "PARTYLINE=1")
 	groupSpawn(cmd)
 	out, err := cmd.Output()

@@ -49,7 +49,9 @@ type chatMember struct {
 	Active time.Time `json:"active,omitempty"`
 	// Delivered is when messages were last handed to it, for the "thinking… 12s" line in the room.
 	Delivered time.Time `json:"delivered,omitempty"`
-	Joined    time.Time `json:"joined"`
+	// Paused is set by /stop <tab>: messages for this member wait until /go <tab>.
+	Paused bool      `json:"paused,omitempty"`
+	Joined time.Time `json:"joined"`
 }
 
 type chatRoom struct {
@@ -58,6 +60,9 @@ type chatRoom struct {
 	// each other is the point, but it must not run unattended for ever; at chatAgentRunCap the
 	// room stops delivering to agents until the person says something.
 	AgentRun int `json:"agent_run"`
+	// Stopped is set by /stop with no arguments: nothing is delivered to any member until /go or
+	// the person posts again.
+	Stopped bool `json:"stopped,omitempty"`
 }
 
 const chatAgentRunCap = 16
@@ -66,7 +71,10 @@ func chatDir() string            { return filepath.Join(stateDir(), "chat") }
 func chatLogPath() string        { return filepath.Join(chatDir(), "room.jsonl") }
 func chatRoomPath() string       { return filepath.Join(chatDir(), "room.json") }
 func chatLockPath() string       { return filepath.Join(chatDir(), ".lock") }
-func (r *chatRoom) paused() bool { return r.AgentRun >= chatAgentRunCap }
+func (r *chatRoom) paused() bool { return r.AgentRun >= chatAgentRunCap || r.Stopped }
+
+// held reports whether delivery to this member is stopped, for the room or for it alone.
+func (r *chatRoom) held(m chatMember) bool { return r.paused() || m.Paused }
 
 // withChatLock runs fn holding the room lock, with the room loaded and saved around it.
 func withChatLock(fn func(r *chatRoom) error) error {
@@ -148,7 +156,7 @@ func postLocked(r *chatRoom, m chatMessage) (chatMessage, error) {
 	switch {
 	case m.Note:
 	case m.From == "you":
-		r.AgentRun = 0
+		r.AgentRun, r.Stopped = 0, false
 	default:
 		r.AgentRun++
 	}

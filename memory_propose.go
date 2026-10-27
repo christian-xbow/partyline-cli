@@ -77,7 +77,7 @@ func memoryProposeMain(args []string) {
 	}
 	kind, body := strings.ToLower(rest[0]), strings.Join(rest[1:], " ")
 	if !validFactKind(kind) {
-		fatal(fmt.Errorf("kind must be one of %s", strings.Join(factKinds, ", ")))
+		fatal(unknownKindError(kind))
 	}
 	// A proposal with no citation is an assertion, and an assertion nobody can check is the thing
 	// this whole mechanism exists to avoid. Refuse it rather than record it weakly.

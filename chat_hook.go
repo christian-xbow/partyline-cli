@@ -62,7 +62,7 @@ func chatDeliveryText(self chatMember, msgs []chatMessage, r *chatRoom) string {
 	}
 	fmt.Fprintf(&b, "\nYou are %s. Also in the room: the person, %s.\n", self.Name, strings.Join(others, ", "))
 	b.WriteString("Reply by running `ptln chat send \"...\"` (put @<number> or @<engine> in it to address one participant). ")
-	b.WriteString("Write it as a chat message, not a report: about 80 words unless you are asked for more. ")
+	b.WriteString("Write it as a short chat message in normal sentences, not a report; longer only if you are asked for detail. ")
 	b.WriteString("Markdown is rendered (lists, **bold**, `code`, code blocks, tables), so use it instead of capitalised labels; skip headings in short replies. ")
 	b.WriteString("Use tools first if you need to, and send nothing if you have nothing to add. ")
 	if self.Engine == "claude" {
@@ -109,7 +109,7 @@ func chatStopDecide(r *chatRoom, keys []string, in chatStopInput, now time.Time)
 	// ("nothing to send"), and posting it woke the other members to narrate back. Seen in the first
 	// end-to-end run, which is why this hook only delivers.
 	me.Answering, me.Sent = false, false
-	if !r.paused() {
+	if !r.held(*me) {
 		if msgs := unreadFor(readChat(), *me); len(msgs) > 0 {
 			me.Read, me.Answering, me.Sent, me.Active, me.Delivered = msgs[len(msgs)-1].Seq, true, false, now, now
 			return chatDeliveryText(*me, msgs, r), nil
@@ -197,7 +197,7 @@ func chatListen() {
 				joined = false
 				return nil
 			}
-			if r.paused() {
+			if r.held(*me) {
 				return nil
 			}
 			if msgs := unreadFor(readChat(), *me); len(msgs) > 0 {

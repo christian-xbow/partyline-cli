@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -27,38 +28,71 @@ import (
 const overviewTimeout = 6 * time.Minute
 
 const overviewPrompt = `Write the overview section of this repository's documentation for engineers and coding
-agents who have never seen it. Read the repository first: README and other docs, build files,
-entry points and the main source directories. Base every statement on what you read.
+agents who have never seen it. Read the repository first: README and other docs, build and CI
+files, deployment config, entry points and the main source directories.
 
-Cover, in this order:
-1. What the project is and the problem it addresses.
-2. How it works end to end: the main flow of data or control through the system.
-3. The main components, naming their directories or files and what each is responsible for.
-4. How to build, run and test it, with the actual commands.
-5. External dependencies and the environments it runs in.
+Cover, in this order. Purpose comes first because it is what the code cannot tell a reader:
+1. The problem it solves, and for whom: who uses it and what they did before it existed, if the
+   repository says.
+2. What it does, in the user's terms before the component terms.
+3. How it works end to end, and the main components: directories or files and what each owns.
+4. What is deliberately absent or out of scope, if the repository says.
+5. How to extend it: the concrete steps to add the most common kind of change.
+6. How to build, run, test and deploy it, with the actual commands. Last.
 
-Rules:
-- Plain technical prose. No marketing language, no analogies, no filler, no lead-in sentences.
-- Do not include current status, progress, results, to-do items or anything that will be out of
-  date soon.
-- Do not invent anything you could not confirm in the repository. If something is unclear, leave
-  it out.
-- 150 to 450 words. Markdown paragraphs; a short list only where the content is a list.
+Rules for every statement:
+- Verify it against a primary source in the repository: code, build or CI configuration,
+  deployment configuration. Name the file where it helps a reader check it.
+- Treat comments, READMEs and docs as claims, not facts, above all about deployment, process and
+  ownership, which go stale first. State such a claim only if configuration confirms it; otherwise
+  attribute it ("the header of ci.yml says deploys are manual") or leave it out.
+- Separate what you observed from what you infer, and do not fill a gap with a plausible guess:
+  leave out what you cannot establish. Who owns it, who uses it and why it exists are often not
+  in the code; omit them rather than invent them.
+- No status, progress, results, to-do items or anything that will soon be out of date.
+- Plain technical prose: no marketing language, analogies, filler or lead-in sentences.
+- Before answering, review your draft as an engineer who knows this codebase well would: what
+  is wrong, unverified or missing? Fix it.
+- 200 to 500 words. Markdown paragraphs; a short list only where the content is a list.
 - Output only the overview text, with no heading and no preamble.`
 
-// generateOverview asks claude, run read-only in root, for the overview text.
-func generateOverview(root string) (string, error) {
+// overviewRefreshPrompt is appended, with the current overview, when an existing overview is
+// rewritten. People correct the overview by hand; a rewrite that starts from scratch would undo that.
+const overviewRefreshPrompt = `
+
+The repository already has an overview, below. People may have corrected it by hand, so treat what it
+says about purpose, audience, decisions and history as what the people who own the project said:
+keep it unless the code now contradicts it, and attribute it if you cannot check it. Change what the
+code now contradicts, remove what no longer exists, and add what is new. The same rules and length
+apply.
+
+Current overview:
+
+`
+
+// generateOverview asks claude, run read-only on the repository's committed HEAD, for the overview.
+//
+// HEAD, not the working tree. A first real run described a feature that had been written and
+// rejected but never committed as a component of the project; a later session would have found the
+// files on disk and concluded it shipped. exportHead copies the committed tree into a temporary
+// directory without touching the repository's own index or working tree.
+func generateOverview(root, previous string) (string, error) {
 	if _, err := exec.LookPath("claude"); err != nil {
 		return "", fmt.Errorf("claude is not on PATH")
 	}
+	tree, cleanup, err := exportHead(root)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
 	ctx, cancel := context.WithTimeout(context.Background(), overviewTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "claude", "-p", overviewPrompt,
-		"--model", "sonnet", "--output-format", "json",
-		// --tools limits what exists in the session, so a bypass default in the user's own
-		// settings cannot turn this into something that edits the repo.
-		"--tools", "Read,Glob,Grep", "--permission-mode", "default")
-	cmd.Dir = root
+	prompt := overviewPrompt
+	if previous != "" {
+		prompt += overviewRefreshPrompt + previous
+	}
+	cmd := headlessClaude(ctx, tree, prompt, "Read,Glob,Grep",
+		"--model", "sonnet", "--output-format", "json", "--permission-mode", "default")
 	cmd.Env = append(os.Environ(), "PARTYLINE=1", "PARTYLINE_MEMORY_CAPTURE=off", "PARTYLINE_MEMORY_REFRESH=off")
 	out, err := cmd.Output()
 	if ctx.Err() != nil {
@@ -74,7 +108,46 @@ func generateOverview(root string) (string, error) {
 	if json.Unmarshal(out, &env) != nil || env.IsError || strings.TrimSpace(env.Result) == "" {
 		return "", fmt.Errorf("claude returned no overview")
 	}
-	return strings.TrimSpace(env.Result), nil
+	// Paths into the temporary tree mean nothing once it is removed; make them repo-relative.
+	result := env.Result
+	for _, prefix := range []string{"/private" + tree + "/", tree + "/"} {
+		result = strings.ReplaceAll(result, prefix, "")
+	}
+	return strings.TrimSpace(result), nil
+}
+
+// exportHead writes the committed tree at HEAD to a temporary directory named after the repo,
+// so the model still sees the project's name in its working directory.
+//
+// It checks HEAD out through a throwaway index rather than using git archive: archive honours
+// export-ignore, and repos that package with it commonly hide .github/, tests/ or deploy config,
+// which are the files the overview is told to check claims against.
+func exportHead(root string) (dir string, cleanup func(), err error) {
+	out, err := exec.Command("git", "-C", root, "rev-parse", "--verify", "-q", "HEAD^{commit}").Output()
+	if err != nil || strings.TrimSpace(string(out)) == "" {
+		if exec.Command("git", "-C", root, "rev-parse", "--git-dir").Run() != nil {
+			return "", nil, fmt.Errorf("%s is not a git repository", root)
+		}
+		return "", nil, fmt.Errorf("the repository has no commits yet; the overview is written from committed code")
+	}
+	tmp, err := os.MkdirTemp("", "ptln-overview-*")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup = func() { _ = os.RemoveAll(tmp) }
+	dir = filepath.Join(tmp, filepath.Base(root))
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	co := exec.Command("git", "-C", root, "--work-tree="+dir, "checkout", "HEAD", "--", ".")
+	co.Env = append(os.Environ(), "GIT_INDEX_FILE="+filepath.Join(tmp, "index"))
+	if msg, err := co.CombinedOutput(); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("check out HEAD: %v: %s", err, strings.TrimSpace(string(msg)))
+	}
+	_ = os.Remove(filepath.Join(tmp, "index"))
+	return dir, cleanup, nil
 }
 
 // currentOverview returns the repo's overview fact, if it has one.
@@ -93,15 +166,30 @@ func currentOverview(dir string) (fact, bool) {
 
 // ensureOverview generates and records an overview when the repo has none. It reports what it
 // did; a failure leaves the rest of the build in place and says how to write one by hand.
-func ensureOverview(ws *projectWorkspace) {
-	if _, ok := currentOverview(ws.Dir); ok {
+func ensureOverview(ws *projectWorkspace, refresh bool) {
+	old, ok := currentOverview(ws.Dir)
+	if ok && !refresh {
 		return
 	}
 	fmt.Println("\nwriting the project overview (claude reads the repository; this takes a minute or two)…")
-	body, err := generateOverview(ws.Dir)
+	previous := ""
+	if ok {
+		previous = old.Body
+	}
+	body, err := generateOverview(ws.Dir, previous)
 	if err != nil {
 		fmt.Printf("  ! overview not generated: %v\n", err)
 		fmt.Println("    write one with `ptln memory add overview \"...\"`")
+		return
+	}
+	if ok {
+		// In place: the id is cited elsewhere, and rewriteFact stamps it verified at HEAD, which
+		// is what resets the drift count.
+		if _, err := rewriteFact(ws.Dir, old.ID, body, memoryAuthor()); err != nil {
+			fmt.Printf("  ! overview not updated: %v\n", err)
+			return
+		}
+		fmt.Printf("✓ overview %s rewritten — `git diff` shows what changed; correct it with `ptln memory edit`\n", old.ID)
 		return
 	}
 	f := fact{Kind: "overview", By: memoryAuthor(), At: time.Now(), Body: body,

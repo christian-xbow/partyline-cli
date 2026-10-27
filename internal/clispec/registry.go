@@ -66,11 +66,13 @@ var Commands = []Spec{
 		Group: "Repo memory", Name: "memory", Summary: "facts about a repository, kept as files in memory/",
 		Usage: []string{
 			"ptln memory build [--apply]           set the repo up: a project overview, build/test/CI facts, open questions",
+			"ptln memory build --apply --refresh   rewrite the overview from the last commit; list facts whose files changed",
 			"ptln memory add <kind> \"...\"         record a fact (overview|decision|constraint|contract|gotcha|question)",
 			"ptln memory ls [--all]                list current facts (--all includes superseded ones)",
 			"ptln memory brief                     what a session is told when it starts",
 			"ptln memory edit <id> \"...\"          rewrite a fact",
 			"ptln memory append <id> \"...\"        add to a fact",
+			"ptln memory verify <id>...            mark facts as checked against the code at HEAD",
 			"ptln memory rm <id>                   delete a fact",
 			"ptln memory where                     where this repo's facts are, and how many",
 			"ptln memory map                       rewrite the generated block in AGENTS.md, CLAUDE.md and GEMINI.md",
@@ -95,7 +97,7 @@ var Commands = []Spec{
 		Group: "Chat", Name: "chat", Summary: "one room where you and your running sessions talk, and they talk to each other",
 		Usage: []string{
 			"ptln chat                     open the room; plain text goes to everyone, @11 or @codex to one session",
-			"  in the room: /add <tab>...  add sessions by tab number · /remove <tab> · /who · Alt-Enter new line · ctrl-c leave",
+			"  in the room: /add <tab>... · /remove <tab> · /who · /stop [tab] · /go [tab] · /clear · /help (every key) · ctrl-c leave",
 			"ptln chat add <tab>...        add sessions from outside the room",
 			"ptln chat remove <tab>...     take sessions out",
 			"ptln chat who                 who is in the room, and whether each one is listening",

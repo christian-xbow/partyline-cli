@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"partyline.sh/partyline/internal/gitwt"
+
+	"partyline.sh/partyline/internal/clispec"
 )
 
 func memoryMain(args []string) {
@@ -21,6 +23,21 @@ func memoryMain(args []string) {
 	if len(args) > 0 {
 		sub = args[0]
 		args = args[1:]
+	}
+	// `ptln memory add --help` once took "--help" as the kind and failed with a list nobody had
+	// been shown. Any subcommand's --help prints the memory help, which lists every kind.
+	// Only flags before the first word count: a fact body can be unquoted words, and
+	// `add gotcha grep -h drops filenames` is a fact about grep, not a request for help.
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") {
+			break
+		}
+		if a == "--help" || a == "-h" {
+			if spec, ok := clispec.Lookup("memory"); ok {
+				clispec.PrintHelp(os.Stdout, spec)
+			}
+			return
+		}
 	}
 	switch sub {
 	case "add":
@@ -39,6 +56,8 @@ func memoryMain(args []string) {
 		memoryEdit(args)
 	case "append":
 		memoryAppend(args)
+	case "verify":
+		memoryVerify(args)
 	case "rm", "remove", "forget":
 		memoryRemove(args)
 	case "where":

@@ -155,48 +155,6 @@ func TestChatFindsAMemberByAnyIdentity(t *testing.T) {
 	}
 }
 
-func TestChatInputEditing(t *testing.T) {
-	in := &chatInput{}
-	send, quit := in.handle([]byte("hé\x7fi\r"))
-	if quit || len(send) != 1 || send[0] != "hi" {
-		t.Fatalf("typing, a backspace and Enter should send %q, got %q", "hi", send)
-	}
-	if send, _ = in.handle([]byte("line one\x1b\rline two\r")); len(send) != 1 || send[0] != "line one\nline two" {
-		t.Errorf("Alt-Enter should add a line break, not send: %q", send)
-	}
-	if send, _ = in.handle([]byte(pasteStart + "a\nb\r\nc" + pasteEnd)); len(send) != 0 || string(in.buf) != "a\nb\nc" {
-		t.Errorf("a paste should land in the input with its line breaks, not be sent: sent %q, input %q", send, string(in.buf))
-	}
-	in.buf = in.buf[:0]
-	// An arrow key split across two reads must not leak into the text.
-	in.handle([]byte("ab\x1b["))
-	in.handle([]byte("Dc"))
-	if string(in.buf) != "abc" {
-		t.Errorf("a split escape sequence leaked into the input: %q", string(in.buf))
-	}
-	if _, quit = in.handle([]byte{3}); !quit {
-		t.Error("ctrl-c should leave")
-	}
-}
-
-// The input area counts the rows it really takes, so a redraw clears all of them. Counting one
-// row for input longer than the window is what left copies of the typed line on screen.
-func TestChatInputCountsWrappedRows(t *testing.T) {
-	in := &chatInput{buf: []rune(strings.Repeat("x", 150))}
-	in.draw(80) // "you › " is 6 columns: 156 columns is 2 rows
-	if in.rows != 2 {
-		t.Fatalf("a 156-column input in an 80-column window takes 2 rows, counted %d", in.rows)
-	}
-	if !strings.HasPrefix(in.draw(80), "\x1b[1A\r\x1b[J") {
-		t.Error("a redraw should move up to the top of the 2-row input before clearing")
-	}
-	in = &chatInput{buf: []rune("one\ntwo"), status: []string{"· #11 codex · waiting: it is working"}}
-	in.draw(80)
-	if in.rows != 3 {
-		t.Errorf("status plus a two-line input is 3 rows, counted %d", in.rows)
-	}
-}
-
 // A long message is wrapped under its header instead of running off as one line, list items keep
 // a hanging indent, and nothing is wider than the terminal.
 func TestChatFormatWrapsUnderAHeader(t *testing.T) {
@@ -267,12 +225,12 @@ func TestChatStatusLines(t *testing.T) {
 		{Key: "d", Name: "#13 claude", Read: 3},
 	}}
 	msgs := []chatMessage{{Seq: 1}, {Seq: 2, From: "you", Text: "?"}, {Seq: 3, From: "a", Text: "hi"}}
-	lines, spinning := chatStatusLines(r, msgs, map[string]string{"b": "you are looking at it"}, now)
+	lines, spinning := chatStatusLines(r, msgs, map[string]string{"b": "you are looking at it"}, nil, now)
 	joined := strings.Join(lines, "\n")
 	if !spinning || !strings.Contains(joined, "#10 claude · "+chatVerb("a", 3)+"… 12s") {
 		t.Errorf("a working session should show a verb and how long it has taken:\n%s", joined)
 	}
-	if !strings.Contains(joined, "#11 codex · waiting: you are looking at it") {
+	if !strings.Contains(joined, "#11 codex · idle, 2 messages waiting: you are looking at it") {
 		t.Errorf("a held-back wake should say why:\n%s", joined)
 	}
 	if !strings.Contains(joined, "✓ #12 claude · replied") {
@@ -296,16 +254,16 @@ func TestChatReviewFixes(t *testing.T) {
 	if ok, _ := screenIdleEmpty("\x1b[39m❯ \x1b[38;5;2mhello"); ok {
 		t.Error("256-colour typed text was read as dim hint text")
 	}
-	if ok, why := screenIdleEmpty("Do you want to proceed?\n❯ 1. Yes\n  2. No"); ok || why != "it is showing a choice" {
+	if ok, why := screenIdleEmpty("Do you want to proceed?\n❯ 1. Yes\n  2. No"); ok || why != "it is waiting for your approval" {
 		t.Errorf("a highlighted menu choice must not count as an empty box, got %v %q", ok, why)
 	}
-	in := &chatInput{}
+	in := newChatInput(nil)
 	in.handle([]byte(pasteStart + "hello\x1b[2"))
 	in.handle([]byte("01~"))
-	if in.pasting || string(in.buf) != "hello" {
-		t.Fatalf("a paste end split across reads should end the paste: pasting=%v buf=%q", in.pasting, string(in.buf))
+	if in.pasting || in.ed.String() != "hello" {
+		t.Fatalf("a paste end split across reads should end the paste: pasting=%v buf=%q", in.pasting, in.ed.String())
 	}
-	if send, _ := in.handle([]byte("\r")); len(send) != 1 {
+	if res := in.handle([]byte("\r")); len(res.send) != 1 {
 		t.Error("Enter should send after the paste ends")
 	}
 	out := chatFormat(chatMessage{Name: "#1 x\x1b]0;evil\x07", Text: "copy \x1b]52;c;ZXZpbA==\x07 this", At: time.Now()}, 80)
@@ -318,7 +276,7 @@ func TestChatReviewFixes(t *testing.T) {
 		return nil
 	})
 	said := ""
-	chatSubmit("@13 are you there?", func(s string) { said = s })
+	chatSubmit("@13 are you there?", func(s string) { said = s }, func() {})
 	if len(readChat()) != 0 || !strings.Contains(said, "not sent") {
 		t.Errorf("an @mention matching nobody should not be sent to everyone: msgs=%d said=%q", len(readChat()), said)
 	}

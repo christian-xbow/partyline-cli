@@ -45,8 +45,11 @@ type fact struct {
 	Tags    []string
 	Commit  string   // the commit this was harvested from, when it came from one
 	Sources []string // citations for a PROPOSED fact ("odoo:ACR-1412", "commit:4a50eb9")
-	Body    string
-	Path    string
+	// Verified is the HEAD at which `ptln memory verify` confirmed the fact against the code. It is
+	// a record, not what drift is measured from: that is the fact file's last commit (memory_drift.go).
+	Verified string
+	Body     string
+	Path     string
 }
 
 func memoryDir(workspaceDir string) string { return filepath.Join(workspaceDir, "memory") }
@@ -62,14 +65,12 @@ func newFactID(now time.Time) string {
 // writeFact stores one fact and returns its path.
 func writeFact(workspaceDir string, f fact) (string, error) {
 	if !validFactKind(f.Kind) {
-		return "", fmt.Errorf("kind must be one of %s", strings.Join(factKinds, ", "))
+		return "", unknownKindError(f.Kind)
 	}
 	// The scope gate, applied HERE rather than at each caller: the CLI, the MCP tool, harvest,
 	// propose and build all land in this function, and a gate one of them could skip is a gate
 	// that will be skipped. See memory_gate.go for what it refuses and why.
-	// The overview is a description of the repository, not a one-line claim; the gate's
-	// phrasing tests are written for claims and would refuse an overview for mentioning a host.
-	if v := screenFact(f.Kind, f.Body); f.Kind != "overview" && v.Refuse {
+	if v := screenFact(f.Kind, f.Body); v.Refuse {
 		return "", v.gateError()
 	}
 	if f.ID == "" {
@@ -106,6 +107,9 @@ func writeFact(workspaceDir string, f fact) (string, error) {
 	// two proposals citing one ticket would read as a disagreement about that ticket.
 	if len(f.Sources) > 0 {
 		fmt.Fprintf(&b, "sources: %s\n", strings.Join(f.Sources, ", "))
+	}
+	if f.Verified != "" {
+		fmt.Fprintf(&b, "verified: %s\n", f.Verified)
 	}
 	b.WriteString("---\n\n")
 	b.WriteString(strings.TrimSpace(f.Body) + "\n")
@@ -201,6 +205,8 @@ func parseFact(s string) (fact, bool) {
 			f.Supersedes = v
 		case "commit":
 			f.Commit = v
+		case "verified":
+			f.Verified = v
 		case "sources":
 			for _, t := range strings.Split(v, ",") {
 				if t = strings.TrimSpace(t); t != "" {
@@ -224,4 +230,34 @@ func parseFact(s string) (fact, bool) {
 		}
 	}
 	return f, f.ID != "" && f.Kind != ""
+}
+
+// kindAliases are words people reach for that mean one of the kinds.
+var kindAliases = map[string]string{
+	"trap": "gotcha", "pitfall": "gotcha", "warning": "gotcha", "caveat": "gotcha", "bug": "gotcha",
+	"rule": "constraint", "invariant": "constraint", "requirement": "constraint", "must": "constraint",
+	"interface": "contract", "api": "contract", "schema": "contract", "protocol": "contract",
+	"choice": "decision", "adr": "decision", "rationale": "decision", "why": "decision",
+	"open": "question", "unknown": "question", "todo": "question",
+	"summary": "overview", "description": "overview", "about": "overview",
+}
+
+// unknownKindError names the valid kinds and, where it can, the one that was probably meant.
+func unknownKindError(kind string) error {
+	msg := fmt.Sprintf("%q is not a kind; use one of %s", kind, strings.Join(factKinds, ", "))
+	k := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(kind)), "s")
+	if k == "" {
+		return fmt.Errorf("%s", msg)
+	}
+	if s, ok := kindAliases[k]; ok {
+		msg += fmt.Sprintf(" (for a %s, use %s)", kind, s)
+	} else {
+		for _, v := range factKinds {
+			if strings.HasPrefix(v, k) || strings.HasPrefix(k, v) {
+				msg += fmt.Sprintf(" (did you mean %s?)", v)
+				break
+			}
+		}
+	}
+	return fmt.Errorf("%s", msg)
 }

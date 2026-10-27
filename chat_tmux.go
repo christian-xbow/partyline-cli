@@ -26,14 +26,14 @@ import (
 )
 
 type chatPane struct {
-	ID, Key, Engine, Name string
-	Window, Index         int
+	ID, Key, Engine, Name, Cwd string
+	Window, Index              int
 }
 
 // chatPanes lists the agent panes in partyline's tmux: claude or codex running in them.
 func chatPanes() []chatPane {
 	out, err := tmuxCmd("list-panes", "-s", "-t", tmuxSessionName, "-F",
-		"#{pane_id}\t#{window_index}\t#{pane_index}\t#{@ptln_key}\t#{pane_tty}").Output()
+		"#{pane_id}\t#{window_index}\t#{pane_index}\t#{@ptln_key}\t#{pane_tty}\t#{pane_current_path}").Output()
 	if err != nil {
 		return nil
 	}
@@ -41,7 +41,7 @@ func chatPanes() []chatPane {
 	perWindow := map[int]int{}
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		f := strings.Split(line, "\t")
-		if len(f) < 5 {
+		if len(f) < 6 {
 			continue
 		}
 		eng := paneEngine(f[4])
@@ -54,7 +54,7 @@ func chatPanes() []chatPane {
 		if key == "" || key == "__launcher__" {
 			key = "pane:" + f[0]
 		}
-		panes = append(panes, chatPane{ID: f[0], Key: key, Engine: eng, Window: w, Index: i})
+		panes = append(panes, chatPane{ID: f[0], Key: key, Engine: eng, Window: w, Index: i, Cwd: f[5]})
 		perWindow[w]++
 	}
 	for k := range panes {
@@ -122,11 +122,20 @@ func paneWatched(paneID string) bool {
 // The capture keeps colours (-e): both engines draw their hint text dim, which is the only way to
 // tell a hint from text the person typed.
 func paneIdleEmpty(paneID string) (bool, string) {
-	out, err := tmuxCmd("capture-pane", "-e", "-p", "-t", paneID, "-S", "-12").Output()
+	out, err := tmuxCmd("capture-pane", "-e", "-p", "-t", paneID).Output()
 	if err != nil {
 		return false, "cannot read the pane"
 	}
-	return screenIdleEmpty(string(out))
+	// Working and approval are checked on the whole visible screen, so a working line pushed up
+	// by a long todo list still counts; the input box is looked for at the bottom. Scrollback is
+	// never read: it holds old working lines.
+	switch screenActivity(stripColours(string(out))).State {
+	case "working":
+		return false, "it is working"
+	case "approval":
+		return false, "it is waiting for your approval"
+	}
+	return screenIdleEmpty(screenBottom(string(out), 15))
 }
 
 // screenIdleEmpty is the screen test, separated for tests. The input line starts with "❯" (Claude)
@@ -134,9 +143,11 @@ func paneIdleEmpty(paneID string) (bool, string) {
 // next prompt or codex's "Ask Codex to do anything". Any visible character after the marker that
 // is not dim was typed, and the answer is no.
 func screenIdleEmpty(screen string) (bool, string) {
-	low := strings.ToLower(stripColours(screen))
-	if strings.Contains(low, "esc to interrupt") || strings.Contains(low, "working (") {
+	switch screenActivity(stripColours(screen)).State {
+	case "working":
 		return false, "it is working"
+	case "approval":
+		return false, "it is waiting for your approval"
 	}
 	lines := strings.Split(screen, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -245,8 +256,8 @@ func wakePane(paneID, line string) error {
 	time.Sleep(1500 * time.Millisecond)
 	// Submitted means the session started working, or its box is empty again. Text still in the
 	// box means it did not submit — exactly the failure this file exists to catch.
-	out, _ := tmuxCmd("capture-pane", "-e", "-p", "-t", paneID, "-S", "-12").Output()
-	if _, why := screenIdleEmpty(string(out)); why == "something is typed in its input box" {
+	out, _ := tmuxCmd("capture-pane", "-e", "-p", "-t", paneID).Output()
+	if _, why := screenIdleEmpty(screenBottom(string(out), 15)); why == "something is typed in its input box" {
 		// The box was empty before, so what is in it is the wake line: clear it rather than
 		// leave it for the person to find.
 		if !paneWatched(paneID) {
