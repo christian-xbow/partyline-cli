@@ -1560,7 +1560,7 @@ func (m *aiMenu) footer() string {
 		return " \x1b[1;38;5;215m☎ welcome\x1b[0m \x1b[38;5;245m— ⏎ resumes a session right where it left off · " +
 			"\x1b[0m\x1b[38;5;215m|\x1b[0m\x1b[38;5;245m opens two side by side · " +
 			"give your agents a shared memory: \x1b[0m\x1b[38;5;215mctrl-\\ c\x1b[0m\x1b[38;5;245m in a session · " +
-			"finish setup: partyline.sh/dashboard · ? all keys\x1b[0m"
+			"finish setup: partyline.sh/dashboard · ?\x1b[0m"
 	}
 	// "| open in split" is in EVERY manager row, always second so it survives right-edge
 	// truncation. It's a global action — it opens two pickers and doesn't read the current
@@ -1576,14 +1576,18 @@ func (m *aiMenu) footer() string {
 		return m.hintBar("PROJECT", []brand.Hint{
 			{Key: "→", Label: "expand"}, {Key: "|", Label: "open in split"},
 			{Key: "P", Label: "joinable"}, {Key: "O", Label: "presence"},
-			{Key: "/", Label: "search"}, {Key: "?", Label: "all keys"}})
+			{Key: "/", Label: "search"}, {Key: "?"}})
 	}
 	// On a session row the two routes read as a pair: one session (↵) vs two (|).
-	return m.hintBar("SESSION", []brand.Hint{
+	hints := []brand.Hint{
 		{Key: "↵", Label: "open"}, {Key: "|", Label: "open in split"},
-		{Key: "o", Label: "new tab"}, {Key: "S", Label: "share"},
-		{Key: "d", Label: "diff"}, {Key: "/", Label: "search"},
-		{Key: "?", Label: "all keys"}})
+		{Key: "o", Label: "new tab"}}
+	if os.Getenv("CMUX_SOCKET_PATH") != "" { // w only works inside cmux
+		hints = append(hints, brand.Hint{Key: "w", Label: "cmux workspace"})
+	}
+	return m.hintBar("SESSION", append(hints,
+		brand.Hint{Key: "d", Label: "diff"},
+		brand.Hint{Key: "/", Label: "search"}, brand.Hint{Key: "?"}))
 }
 
 // hintBar is the contextual footer, bound to this frame's width. The rendering lives in
